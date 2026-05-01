@@ -1,8 +1,14 @@
-- name: Commit & Push in batches of 5 files (robust)
+- name: Commit & Push files (safe UTF-8)
   run: |
     BRANCH="${GITHUB_REF_NAME}"
     git config user.name "github-actions"
     git config user.email "github-actions@github.com"
+
+    # فقط فایل‌های موجود در downloads/ را اضافه کن (بدون git ls-files)
+    git add downloads/
+    git commit -m "Add downloaded files" || echo "Nothing to commit"
+    git pull --rebase origin "$BRANCH" || true
+    git push origin HEAD:"$BRANCH"
 
     # تولید لیست فایل‌ها با جداکننده null (امن برای هر کاراکتری)
     git -c core.quotepath=false ls-files -z --others --modified --exclude-standard downloads/ > /tmp/files.txt
