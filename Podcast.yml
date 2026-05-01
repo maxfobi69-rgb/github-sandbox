@@ -1,52 +1,83 @@
-- name: Commit & Push files (safe UTF-8)
-  run: |
-    BRANCH="${GITHUB_REF_NAME}"
-    git config user.name "github-actions"
-    git config user.email "github-actions@github.com"
+name: Download from Commit & Save to Repo
+on:
+  push:
+    branches:
+      - "**"
+jobs:
+  save-file:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    # فقط فایل‌های موجود در downloads/ را اضافه کن (بدون git ls-files)
-    git add downloads/
-    git commit -m "Add downloaded files" || echo "Nothing to commit"
-    git pull --rebase origin "$BRANCH" || true
-    git push origin HEAD:"$BRANCH"
+      - name: Install aria2
+        run: sudo apt-get install -y aria2
 
-    # تولید لیست فایل‌ها با جداکننده null (امن برای هر کاراکتری)
-    git -c core.quotepath=false ls-files -z --others --modified --exclude-standard downloads/ > /tmp/files.txt
+      - name: Extract URLs and download files
+        run: |
+          MSG=$(git log -1 --pretty=%B)
+          echo "Commit message: $MSG"
 
-    # شمارش فایل‌ها (تعداد null ها = تعداد فایل)
-    TOTAL=$(tr -cd '\0' < /tmp/files.txt | wc -c)
-    echo "📦 Total files to push: $TOTAL"
+          if echo "$MSG" | grep -qP 'download-zip:'; then
+            MODE="zip"
+            URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
+          elif echo "$MSG" | grep -qP 'download:'; then
+            MODE="normal"
+            URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
+          else
+            echo "❌ No download command found in commit message"
+            exit 1
+          fi
 
-    if [ "$TOTAL" -eq 0 ]; then
-      echo "Nothing to commit"
-      exit 0
-    fi
+          echo "Mode: $MODE"
+          mkdir -p downloads tmp_downloads
 
-    BATCH_SIZE=5
-    count=0
-    batch_num=0
-    batch_files=()
+          for URL in $URL_LINE; do
+            FILENAME=$(basename "$URL")
+            echo "⬇️ Downloading $URL -> $FILENAME"
 
-    # خواندن null-delimited و افزودن تدریجی
-    while IFS= read -r -d '' file; do
-      batch_files+=("$file")
-      count=$((count + 1))
-      # وقتی به سایز دسته رسیدیم یا فایل آخر را خواندیم
-      if [ $((count % BATCH_SIZE)) -eq 0 ] || [ "$count" -eq "$TOTAL" ]; then
-        batch_num=$((batch_num + 1))
-        echo "🚀 Pushing batch $batch_num: file(s) $((count - ${#batch_files[@]} + 1))–$count of $TOTAL"
+            aria2c \
+              --split=2 \
+              --max-connection-per-server=2 \
+              --min-split-size=90M \
+              --dir="tmp_downloads" \
+              "$URL"
+          done
 
-        # اضافه کردن دقیق همین فایل‌ها
-        for f in "${batch_files[@]}"; do
-          git add "$f"
-        done
+          if [ "$MODE" = "zip" ]; then
+            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
+            zip -j "$ARCHIVE_NAME" tmp_downloads/*
+          fi
 
-        git commit -m "Add downloaded files — batch $batch_num [skip ci]" || echo "No changes to commit"
-        git pull --rebase origin "$BRANCH" || true
-        git push origin HEAD:"$BRANCH"
+          for FILE in tmp_downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            LIMIT=$((90 * 1024 * 1024))
+            BASENAME=$(basename "$FILE")
 
-        batch_files=()   # پاک‌سازی برای دستهٔ بعدی
-      fi
-    done < /tmp/files.txt
+            if [ "$SIZE" -gt "$LIMIT" ]; then
+              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
+              zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
+              echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
+            else
+              cp "$FILE" "downloads/$BASENAME"
+            fi
+          done
 
-    echo "🎉 All $TOTAL files pushed in $batch_num batch(es)"
+          rm -rf tmp_downloads
+
+      - name: Commit & Push files (safe UTF-8)
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # اضافه کردن همه فایل‌های downloads/ بدون ls-files
+          git add downloads/
+          git commit -m "Add downloaded files" || echo "Nothing to commit"
+          git pull --rebase origin "$BRANCH" || true
+          git push origin HEAD:"$BRANCH"
