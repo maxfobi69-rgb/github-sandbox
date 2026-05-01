@@ -37,14 +37,16 @@ jobs:
           mkdir -p downloads tmp_downloads
 
           for URL in $URL_LINE; do
-            FILENAME=$(basename "$URL")
-            echo "⬇️ Downloading $URL -> $FILENAME"
+            # 👇 نام فایل را امن می‌کنیم: فقط حروف، اعداد، خط‌تیره و نقطه
+            SAFE_FILENAME=$(basename "$URL" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            echo "⬇️ Downloading $URL -> $SAFE_FILENAME"
 
             aria2c \
               --split=2 \
               --max-connection-per-server=2 \
               --min-split-size=90M \
               --dir="tmp_downloads" \
+              --out="$SAFE_FILENAME" \
               "$URL"
           done
 
@@ -62,7 +64,6 @@ jobs:
             if [ "$SIZE" -gt "$LIMIT" ]; then
               echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
               zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
-              echo "✅ Parts: $(ls downloads/${BASENAME}* | wc -l)"
             else
               cp "$FILE" "downloads/$BASENAME"
             fi
@@ -70,13 +71,13 @@ jobs:
 
           rm -rf tmp_downloads
 
-      - name: Commit & Push files (safe UTF-8)
+      - name: Commit & Push files (safe UTF-8, NO ls-files)
         run: |
+          echo "✅ USING NEW WORKFLOW (NO LS-FILES)"
           BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # اضافه کردن همه فایل‌های downloads/ بدون ls-files
           git add downloads/
           git commit -m "Add downloaded files" || echo "Nothing to commit"
           git pull --rebase origin "$BRANCH" || true
