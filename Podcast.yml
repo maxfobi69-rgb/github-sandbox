@@ -1,12 +1,14 @@
-- name: Commit & Push in batches of 5 files
+- name: Commit & Push in batches of 5 files (robust)
   run: |
     BRANCH="${GITHUB_REF_NAME}"
     git config user.name "github-actions"
     git config user.email "github-actions@github.com"
 
-    # جمع‌آوری نام فایل‌های جدید/تغییریافته با جداکننده null
-    mapfile -d '' ALL_FILES < <(git -c core.quotepath=false ls-files -z --others --modified --exclude-standard downloads/)
-    TOTAL=${#ALL_FILES[@]}
+    # تولید لیست فایل‌ها با جداکننده null (امن برای هر کاراکتری)
+    git -c core.quotepath=false ls-files -z --others --modified --exclude-standard downloads/ > /tmp/files.txt
+
+    # شمارش فایل‌ها (تعداد null ها = تعداد فایل)
+    TOTAL=$(tr -cd '\0' < /tmp/files.txt | wc -c)
     echo "📦 Total files to push: $TOTAL"
 
     if [ "$TOTAL" -eq 0 ]; then
@@ -15,26 +17,30 @@
     fi
 
     BATCH_SIZE=5
-    BATCH_NUM=0
+    count=0
+    batch_num=0
+    batch_files=()
 
-    for (( i=0; i<TOTAL; i+=BATCH_SIZE )); do
-      BATCH_NUM=$(( BATCH_NUM + 1 ))
-      # استخراج دستهٔ ۵ تایی
-      BATCH=("${ALL_FILES[@]:i:BATCH_SIZE}")
-      echo "🚀 Pushing batch $BATCH_NUM: files $((i+1))–$(( i + ${#BATCH[@]} )) of $TOTAL"
+    # خواندن null-delimited و افزودن تدریجی
+    while IFS= read -r -d '' file; do
+      batch_files+=("$file")
+      count=$((count + 1))
+      # وقتی به سایز دسته رسیدیم یا فایل آخر را خواندیم
+      if [ $((count % BATCH_SIZE)) -eq 0 ] || [ "$count" -eq "$TOTAL" ]; then
+        batch_num=$((batch_num + 1))
+        echo "🚀 Pushing batch $batch_num: file(s) $((count - ${#batch_files[@]} + 1))–$count of $TOTAL"
 
-      # اضافه کردن تک‌تک فایل‌های دسته با git add
-      for file in "${BATCH[@]}"; do
-        git add "$file"
-      done
+        # اضافه کردن دقیق همین فایل‌ها
+        for f in "${batch_files[@]}"; do
+          git add "$f"
+        done
 
-      git commit -m "Add downloaded files — batch $BATCH_NUM [skip ci]"
+        git commit -m "Add downloaded files — batch $batch_num [skip ci]" || echo "No changes to commit"
+        git pull --rebase origin "$BRANCH" || true
+        git push origin HEAD:"$BRANCH"
 
-      # کشیدن تغییرات احتمالی و push
-      git pull --rebase origin "$BRANCH"
-      git push origin HEAD:"$BRANCH"
+        batch_files=()   # پاک‌سازی برای دستهٔ بعدی
+      fi
+    done < /tmp/files.txt
 
-      echo "✅ Batch $BATCH_NUM pushed"
-    done
-
-    echo "🎉 All $TOTAL files pushed in $BATCH_NUM batch(es)"
+    echo "🎉 All $TOTAL files pushed in $batch_num batch(es)"
