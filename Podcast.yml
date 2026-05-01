@@ -1,84 +1,69 @@
-name: Download from Commit & Save to Repo
+name: Download File (Safe ASCII)
+
 on:
   push:
     branches:
       - "**"
+
 jobs:
-  save-file:
+  download-and-save:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install aria2
-        run: sudo apt-get install -y aria2
+        run: sudo apt-get update -y && sudo apt-get install -y aria2
 
-      - name: Extract URLs and download files
+      - name: Download files based on commit message
         run: |
           MSG=$(git log -1 --pretty=%B)
           echo "Commit message: $MSG"
 
-          if echo "$MSG" | grep -qP 'download-zip:'; then
-            MODE="zip"
-            URL_LINE=$(echo "$MSG" | grep -oP 'download-zip:\s*\K.*')
-          elif echo "$MSG" | grep -qP 'download:'; then
-            MODE="normal"
+          if echo "$MSG" | grep -qP 'download:'; then
             URL_LINE=$(echo "$MSG" | grep -oP 'download:\s*\K.*')
           else
-            echo "❌ No download command found in commit message"
+            echo "❌ No download: command found"
             exit 1
           fi
 
-          echo "Mode: $MODE"
-          mkdir -p downloads tmp_downloads
+          mkdir -p downloads
 
           for URL in $URL_LINE; do
-            # 👇 نام فایل را امن می‌کنیم: فقط حروف، اعداد، خط‌تیره و نقطه
-            SAFE_FILENAME=$(basename "$URL" | sed 's/[^a-zA-Z0-9._-]/_/g')
-            echo "⬇️ Downloading $URL -> $SAFE_FILENAME"
+            # ساخت یک نام فایل کاملاً امن (فقط حروف انگلیسی، اعداد، نقطه و خط تیره)
+            ORIGINAL_NAME=$(basename "$URL")
+            # حذف کاراکترهای غیرمجاز (همه چیز بجز a-z A-Z 0-9 . - _) و تبدیل آنها به زیرخط
+            SAFE_NAME=$(echo "$ORIGINAL_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            # اگر بعد از پالایش نام خالی ماند، یک نام تصادفی بده
+            if [ -z "$SAFE_NAME" ]; then
+              SAFE_NAME="download_$(date +%s)"
+            fi
 
+            echo "⬇️ Downloading $URL → $SAFE_NAME"
             aria2c \
+              --dir=downloads \
+              --out="$SAFE_NAME" \
               --split=2 \
               --max-connection-per-server=2 \
               --min-split-size=90M \
-              --dir="tmp_downloads" \
-              --out="$SAFE_FILENAME" \
               "$URL"
           done
 
-          if [ "$MODE" = "zip" ]; then
-            ARCHIVE_NAME="tmp_downloads/archive_$(date +%Y%m%d_%H%M%S).zip"
-            zip -j "$ARCHIVE_NAME" tmp_downloads/*
-          fi
-
-          for FILE in tmp_downloads/*; do
-            [ -f "$FILE" ] || continue
-            SIZE=$(stat -c%s "$FILE")
-            LIMIT=$((90 * 1024 * 1024))
-            BASENAME=$(basename "$FILE")
-
-            if [ "$SIZE" -gt "$LIMIT" ]; then
-              echo "✂️ $BASENAME is $(( SIZE / 1024 / 1024 ))MB — splitting with zip..."
-              zip -0 -s 90m "downloads/${BASENAME}.zip" -j "$FILE"
-            else
-              cp "$FILE" "downloads/$BASENAME"
-            fi
-          done
-
-          rm -rf tmp_downloads
-
-      - name: Commit & Push files (safe UTF-8, NO ls-files)
+      - name: Commit and push files (no ls-files, safe names)
         run: |
-          echo "✅ USING NEW WORKFLOW (NO LS-FILES)"
-          BRANCH="${GITHUB_REF_NAME}"
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # اضافه کردن همه فایل‌های پوشه downloads
           git add downloads/
-          git commit -m "Add downloaded files" || echo "Nothing to commit"
-          git pull --rebase origin "$BRANCH" || true
-          git push origin HEAD:"$BRANCH"
+
+          # تلاش برای commit؛ اگر چیزی برای commit نبود خطا نمی‌دهد
+          git commit -m "Add downloaded file(s)" || echo "Nothing to commit"
+
+          # pull و push
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}"
